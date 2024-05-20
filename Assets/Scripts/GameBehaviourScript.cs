@@ -1,24 +1,31 @@
-using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Security.Cryptography;
-using Unity.VisualScripting;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using UnityEngine.SceneManagement;
-// Este script se le aplica al GameObject Tetracube, en el que se van guardando una ficha hasta que cae (es como el objeto padre entonces las instrucciones aplican a los hijos)
+// Este script se le aplica al GameObject Tetracube, en el que se van guardando una ficha hasta que cae (es el objeto padre entonces las instrucciones aplican a los hijos)
 // de ahí en adelante se dejan como GameObjects estáticos aparte (no les afectan más las instrucciones del script)
 public class GameBehaviourScript : MonoBehaviour
 {
     public GameObject[] tetracubes; // Arreglo de objetos en los que se meten las 7 diferentes fichas (tetracubos)
-    public GameObject[] rows;
+    public GameObject[] rows; // Arreglo de objetos en los que se meten las filas para guardar los cubos que forman un tetracubo una vez este se vuelve estático
+    private GameObject actualTetro; // Instancia de uno de los 7 tetracubos y es el que se puede controlar en el juego
+    private GameObject ghostTetro; // Instancia de actualTetro pero se baja hasta colisionar
 
-    private float interval = 3f;
+    private int width = 4;
+    private int height = 11;
+    private int depth = 4;
+    private int[,,] grid; // Matriz en la que se guarda la posición de todos los cubos (sin cubo=0; activos=1; estáticos=2; ghost=3)
+    private int score = 0;
+    private int level = 0;
+    private int tetroIndex;
+    private int tetroIndex1;
+    private int[] cubesInRow; // Almacena los cubos estáticos de cada fila
+    private float interval = 3f; // Entre menos valor, más velocidad tiene el juego
     private float timer = 0.0f;
-    private bool touching = false;
-    private bool ground = false;
+
+    private bool touching = false; // Detectar colisiones abajo de la ficha activa
+    private bool ground = false; // Detectar colision abajo de la ficha ghost
     private bool canmoveX1 = true;
     private bool canmoveX0 = true;
     private bool canmoveZ1 = true;
@@ -27,34 +34,22 @@ public class GameBehaviourScript : MonoBehaviour
     private bool b = true;
     private bool pause = false;
 
-    private int width = 4;
-    private int height = 11;
-    private int depth = 4;
-    private int[,,] grid;
-
-    private int score = 0;
-    private int level = 0;
+    // Relativo a UI 
     public TMP_Text scoreText;
     public TMP_Text levelText;
     public TMP_Text gameOverText;
     public Button retry;
     public Image nextTetro;
     public AudioSource musicSource;
-
-    private int tetroIndex;
-    private int tetroIndex1;
-    private int[] cubesInRow;
-    private GameObject actualTetro;
-    private GameObject ghostTetro;
-    private Vector3 spawnPosition;
     private Material Ghost_material;
 
     void Start() 
     {
-        // Para hacer que vaya a targetFrameRate fps
+        // Para hacer que vaya a "targetFrameRate" fps
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = 30;
 
+        // Creación de la matriz que guarda posiciones grid (se pone +4 en y para poder hacer rotaciones cuando spawnea una pieza)
         grid = new int[width, height+4, depth];
         for (int x = 0; x < width; x++)
         {
@@ -66,21 +61,22 @@ public class GameBehaviourScript : MonoBehaviour
                 }
             }
         }
+
+        // Inicialización de variables
         cubesInRow = new int[height];
         scoreText.text = "Score: " + score.ToString();
         levelText.text = "Level: 0";
         gameOverText.gameObject.SetActive(false);
         retry.gameObject.SetActive(false);
         musicSource = GetComponent<AudioSource>();
-        
         Ghost_material = Resources.Load<Material>("Materials/Ghost_material");
 
+        // Spawn de la primera ficha
         tetroIndex = UnityEngine.Random.Range(0, tetracubes.Length); // Elige aleatoriamente una de las fichas del arreglo
-        tetroIndex1 = UnityEngine.Random.Range(0, tetracubes.Length);
-        nextTetro.sprite = Resources.Load<Sprite>(tetroIndex1.ToString() + "_prefab");
+        tetroIndex1 = UnityEngine.Random.Range(0, tetracubes.Length); // Elige la ficha que siga
+        nextTetro.sprite = Resources.Load<Sprite>(tetroIndex1.ToString() + "_prefab"); // Se muestra la ficha que sigue
         actualTetro = Instantiate(tetracubes[tetroIndex], transform.position, Quaternion.identity, transform); // Crea una copia de la ficha seleccionada y le asigna posición y rotación del GameObject Tetracube (y establece este como objeto padre)
-        spawnPosition = new Vector3(width/2-2, height-1, depth/2); // Posición en la que empiezan los tetracubos
-        actualTetro.transform.position = spawnPosition; // Se sincroniza la spawnPosition con la posición del GameObject Tetracube
+        actualTetro.transform.position = new Vector3(width / 2 - 2, height - 1, depth / 2); // Se sincroniza la posición con la que se empieza con la posición del GameObject actualTetro
         cubePositions(1);
         updateGhost();
     }
@@ -89,71 +85,122 @@ public class GameBehaviourScript : MonoBehaviour
     {
         if (pause == false)
         {
-            detection();
-            movement();
-            timer += Time.deltaTime;
-            if (timer >= interval && actualTetro.transform.position.y > 0 && touching == false)
-            {
-                actualTetro.transform.position = new Vector3(actualTetro.transform.position.x, actualTetro.transform.position.y - 1, actualTetro.transform.position.z);
-                timer = 0.0f;
-                updateGrid(1, 0);
-                cubePositions(1);
-            }
-            if (actualTetro.transform.position.y == 0 || touching == true)
-            {
-                touching = false;
-                updateGrid(1, 2);
-                convertIntoCubes();
-                eliminateRow();
-                Destroy(actualTetro);
-                tetroIndex = tetroIndex1;
-                tetroIndex1 = UnityEngine.Random.Range(0, tetracubes.Length);
-                nextTetro.sprite = Resources.Load<Sprite>(tetroIndex1.ToString() + "_prefab");
-                actualTetro = Instantiate(tetracubes[tetroIndex], transform.position, Quaternion.identity, transform);
-                actualTetro.transform.position = spawnPosition;
-                cubePositions(1);
-                updateGhost();
-                losing();
-            }
+            gameFlow(); // A menos que se pierda (se pausa), la ficha activa va a seguir bajando, actualizando grid y se va a seguir detectando suelo o fichas abajo
         }
     }
 
-    private void leveling()
-    {
-        score++;
-        scoreText.text = "Score: " + score.ToString();
-        b = true;
-        if (score % 2 == 0 && b == true)
-        {
-            level++;
-            levelText.text = "Level: " + level.ToString();
-            if (interval > 1.1f)
-                interval--;
-            else
-                interval -= 0.1f;
-            b = false;
-        }
-    }
-
-    private void losing()
+    private void gameFlow()
     {
         detection();
-        if (touching == true)
+        timer += 0.03f;
+        if (timer >= interval && actualTetro.transform.position.y > 0 && touching == false) // Cada cierto intervalo de tiempo, la ficha activa baja un cubo en Y, entonces se actualiza su posición en grid
         {
-            pause = true;
-            Time.timeScale = 0;
-            gameOverText.gameObject.SetActive(true);
-            retry.gameObject.SetActive(true);
-            musicSource.Pause();
+            actualTetro.transform.position = new Vector3(actualTetro.transform.position.x, actualTetro.transform.position.y - 1, actualTetro.transform.position.z);
+            timer = 0.0f;
+            updateGrid(1, 0);
+            cubePositions(1);
+        }
+        if (actualTetro.transform.position.y == 0 || touching == true) // Si se detecta a la ficha activa tocando por encima algún cubo estático o el piso, la vuelve cubos estáticos y spawnea una nueva ficha
+        {
+            touching = false;
+            timer = 0.0f;
+            updateGrid(1, 2);
+            convertIntoCubes();
+            eliminateRow();
+            tetroIndex = tetroIndex1;
+            tetroIndex1 = UnityEngine.Random.Range(0, tetracubes.Length);
+            nextTetro.sprite = Resources.Load<Sprite>(tetroIndex1.ToString() + "_prefab");
+            actualTetro = Instantiate(tetracubes[tetroIndex], transform.position, Quaternion.identity, transform);
+            actualTetro.transform.position = new Vector3(width / 2 - 2, height - 1, depth / 2);
+            cubePositions(1);
+            updateGhost();
+            losing();
+        }
+        movement();
+    }
+
+    private void detection() // Recorre todo grid verificando donde están los cubos de la ficha activa y revisa: 
+    {
+        canmoveX0 = true;
+        canmoveX1 = true;
+        canmoveZ0 = true;
+        canmoveZ1 = true;
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                for (int z = 0; z < depth; z++)
+                {
+                    if (grid[x, y, z] == 1)
+                    {
+                        if (y == 0 || grid[x, y - 1, z] == 2) // 1. Si algún cubo de la ficha tocó suelo u otra ficha ya estática
+                        {
+                            touching = true;
+                        }
+                        if (x == width - 1 || grid[x + 1, y, z] == 2) // 2. Si algún cubo está en el límite de X o Z. Esto para restringir el movimiento hacia ese lado y que no se salga la ficha
+                        {
+                            canmoveX1 = false;
+                        }
+                        if (x == 0 || grid[x - 1, y, z] == 2)
+                        {
+                            canmoveX0 = false;
+                        }
+                        if (z == depth - 1 || grid[x, y, z + 1] == 2)
+                        {
+                            canmoveZ1 = false;
+                        }
+                        if (z == 0 || grid[x, y, z - 1] == 2)
+                        {
+                            canmoveZ0 = false;
+                        }
+                    }
+                    if (grid[x, y, z] == 3) // También revisa dónde están los cubos de ghost hasta que toquen suelo u otra ficha ya estática
+                    {
+                        if (y == 0 || grid[x, y - 1, z] == 2)
+                        {
+                            ground = true;
+                        }
+                    }
+                }
+            }
+
         }
     }
 
-    public void retryClick()
+    private void updateGrid(int replacethis, int forthis) // Reemplaza cada vez que aparezca el primer argumento en grid por el segundo
     {
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                for (int z = 0; z < depth; z++)
+                {
+                    if (grid[x, y, z] == replacethis)
+                    {
+                        grid[x, y, z] = forthis;
+                    }
+                }
+            }
+        }
     }
 
-    private void convertIntoCubes()
+    private void cubePositions(int typeofcube) // Ya sea para actualTetro o ghostTetro, mira la posición de cada cubo que lo compone en ese instante y la escribe en grid (1 para actualTetro, 3 para ghostTetro)
+    {
+        Transform tetracube = actualTetro.transform;
+        if (typeofcube == 3)
+            tetracube = ghostTetro.transform;
+        foreach (Transform cube in tetracube)
+        {
+            Vector3 gridPosition = cube.position;
+            if (gridPosition.x >= 0 && gridPosition.x < width && gridPosition.y >= 0 && gridPosition.y < height && gridPosition.z >= 0 && gridPosition.z < depth)
+            {
+                grid[(int)gridPosition.x, (int)gridPosition.y, (int)gridPosition.z] = typeofcube;
+            }
+        }
+    }
+
+    private void convertIntoCubes() // Cuando un tetracubo cae, toma cubo por cubo y los reparte dependiendo de en que fila quedaron (estas se guardan en rows) esto para luego poder mirar si una fila se completó y eliminar sus cubos
     {
         for (int i = 3; i >= 0; i--)
         {
@@ -163,17 +210,17 @@ public class GameBehaviourScript : MonoBehaviour
             child.SetParent(rowParent.transform, true);
             cubesInRow[rowNumber]++;
         }
+        Destroy(actualTetro);
     }
 
-    private void eliminateRow() // si uno hace 2 de una, se elimina la de abajo y la siguiente se elimina pero cuando cae la pieza que sigue
+    private void eliminateRow() // Revisa fila por fila, si alguna está completa, la elimina y actualiza este cambio en grid y luego en el arreglo rows (bajando las filas arriba de esta)
     {
         for (int i = 0; i < height; i++)
         {
             if (cubesInRow[i] == width * depth)
             {
-                
                 leveling();
-                for (int y = i + 1; y < height; y++) 
+                for (int y = i + 1; y < height; y++)
                 {
                     // Se bajan las filas superiores en la grilla
                     for (int x = 0; x < width; x++)
@@ -186,8 +233,8 @@ public class GameBehaviourScript : MonoBehaviour
                             }
                         }
                     }
-                    // Se bajan las filas superiores en el GameObject rows
-                    GameObject rowParent = GameObject.Find("row" + (y - 1)); 
+                    // Se bajan las filas superiores en el GameObject rows y elimina la que se haya completado
+                    GameObject rowParent = GameObject.Find("row" + (y - 1));
                     Transform[] childrenCopy = new Transform[rowParent.transform.childCount];
                     for (int j = 0; j < rowParent.transform.childCount; j++)
                     {
@@ -211,57 +258,24 @@ public class GameBehaviourScript : MonoBehaviour
         }
     }
 
-    private void cubePositions(int typeofcube)
+    private void leveling() // Suma 100 puntos a score por cada fila hecha y por cada 2 filas se sube de nivel, haciendo que bajen más rápido las fichas
     {
-        Transform tetracube = actualTetro.transform;
-        if (typeofcube == 3)
-            tetracube = ghostTetro.transform;
-        foreach (Transform cube in tetracube)
+        score += 100;
+        scoreText.text = "Score: " + score.ToString();
+        b = true;
+        if (score % 200 == 0 && b == true)
         {
-            Vector3 gridPosition = cube.position;
-            if (gridPosition.x >= 0 && gridPosition.x < width && gridPosition.y >= 0 && gridPosition.y < height && gridPosition.z >= 0 && gridPosition.z < depth)
-            {
-                grid[(int)gridPosition.x, (int)gridPosition.y, (int)gridPosition.z] = typeofcube;
-            }
+            level++;
+            levelText.text = "Level: " + level.ToString();
+            if (interval > 1.1f)
+                interval--;
+            else
+                interval -= 0.1f;
+            b = false;
         }
     }
 
-    private void updateGrid(int replacethis, int forthis)
-    {
-        for (int x = 0; x < width; x++)
-        {
-            for (int y = 0; y < height; y++)
-            {
-                for (int z = 0; z < depth; z++)
-                {
-                    if (grid[x, y, z] == replacethis)
-                    {
-                        grid[x, y, z] = forthis;
-                    }
-                }
-            }
-        }
-    }
-
-    private void changeMaterial(Material newMaterial)
-    {
-        Transform tetracube = actualTetro.transform;
-        if (newMaterial == Ghost_material)
-            tetracube = ghostTetro.transform;
-        if (newMaterial != null)
-        {
-            foreach (Transform child in tetracube)
-            {
-                Renderer childRenderer = child.GetComponent<Renderer>();
-                if (childRenderer != null)
-                    childRenderer.material = newMaterial;
-                else
-                    print("No se encontró el material");
-            }
-        }
-    }
-
-    private void updateGhost()
+    private void updateGhost() // Se elimina y luego crea ghostTetro instanciando actualTetro, luego va bajando fila por fila en donde está actualTetro, hasta que encuentra piso o algún cubo estático
     {
         Destroy(ghostTetro);
         ghostTetro = Instantiate(actualTetro, actualTetro.transform.position, Quaternion.identity);
@@ -287,157 +301,36 @@ public class GameBehaviourScript : MonoBehaviour
         }
     }
 
-    private void inGrid()
+    private void changeMaterial(Material newMaterial) // Cambia el material de ghostTetro para que no se vea igual a actualTetro
     {
-        updateGrid(1, 0);
-        cubePositions(1);
-        updateGhost();
-    }
-
-    public void printGrid()
-    {
-        string actualgrid = "";
-        for (int y = grid.GetLength(1) - 1; y >= 0; y--)
+        Transform tetracube = ghostTetro.transform;
+        if (newMaterial != null)
         {
-            actualgrid = actualgrid + "y = " + y + "\n";
-            for (int z = grid.GetLength(2)-1; z >= 0; z--)
+            foreach (Transform child in tetracube)
             {
-                for (int x = 0; x < grid.GetLength(0); x++)
-                {
-                    actualgrid = actualgrid + grid[x, y, z].ToString() + " ";
-                }
-                actualgrid = actualgrid + "     z = " + z + "\n";
+                Renderer childRenderer = child.GetComponent<Renderer>();
+                childRenderer.material = newMaterial;
             }
-            actualgrid = actualgrid + "\n\n";
-        }
-        print(actualgrid);
-        // Se cuenta comenzando desde 0
-        // Cada cuadrado grande es un renglón de "y" (espacialmente, como si y se cortara a rebanadas, esto servirá luego para quitar dichos reenglones si todos están en 1)
-        // En cada cuadrado, las columnas (Izquierda -> Derecha) es "x" mientras que las filas (Abajo -> Arriba) es "z" 
-    }
-
-    public void cubeConfirm()
-    {
-        if (tetroIndex == 6 && a == true)
-        {
-            foreach (Transform child in actualTetro.transform)
-            {
-                child.localPosition = new Vector3((int)child.localPosition.x, (int)-child.localPosition.z, (int)child.localPosition.y);
-            }
-            inGrid();
-            a = false;
-        }
-        else if (tetroIndex != 6)
-            a = true;
-    }
-
-    private void detection()
-    {
-        canmoveX0 = true;
-        canmoveX1 = true;
-        canmoveZ0 = true;
-        canmoveZ1 = true;
-
-        for (int y = 0; y < height; y++) 
-        {
-            for (int x = 0; x < width; x++)
-            {
-                for (int z = 0; z < depth; z++)
-                {
-                    if (grid[x, y, z] == 1)
-                    {
-                        if (y == 0 || grid[x, y - 1, z] == 2)
-                        {
-                            touching = true;
-                        }
-                        if (x == width-1 || grid[x + 1, y, z] == 2)
-                        {
-                            canmoveX1 = false;
-                        }
-                        if (x == 0 || grid[x - 1, y, z] == 2)
-                        {
-                            canmoveX0 = false;
-                        }
-                        if (z == depth - 1 || grid[x, y, z + 1] == 2)
-                        {
-                            canmoveZ1 = false;
-                        }
-                        if (z == 0 || grid[x, y, z - 1] == 2)
-                        {
-                            canmoveZ0 = false;
-                        }
-                    }
-                    if (grid[x, y, z] == 3)
-                    {
-                        if (y == 0 || grid[x, y - 1, z] == 2)
-                        {
-                            ground = true;
-                        }
-                    }
-                }
-            }
-
         }
     }
 
-    private bool canRotate(string rotationAxis)
+    private void losing() // Si apenas spawnea una ficha, ya se detecta un cubo abajo, se pausa el juego y aparece la pantalla de game over
     {
-        // Simula la rotación del tetracubo actual
-        List<Vector3> simulatedPositions = new List<Vector3>(); //tiki
-        Vector3 spatialpos = actualTetro.transform.position; //tiki
-        foreach (Transform child in actualTetro.transform)
+        detection();
+        if (touching == true)
         {
-            Vector3 rotatedPosition;
-            switch (rotationAxis)
-            {
-                case "X+":
-                    rotatedPosition = new Vector3(child.localPosition.x, -child.localPosition.z, child.localPosition.y);
-                    break;
-                case "X-":
-                    rotatedPosition = new Vector3(child.localPosition.x, child.localPosition.z, -child.localPosition.y);
-                    break;
-                case "Y+":
-                    rotatedPosition = new Vector3(-child.localPosition.z, child.localPosition.y, child.localPosition.x);
-                    break;
-                case "Y-":
-                    rotatedPosition = new Vector3(child.localPosition.z, child.localPosition.y, -child.localPosition.x);
-                    break;
-                case "Z+":
-                    rotatedPosition = new Vector3(child.localPosition.y, -child.localPosition.x, child.localPosition.z);
-                    break;
-                case "Z-":
-                    rotatedPosition = new Vector3(-child.localPosition.y, child.localPosition.x, child.localPosition.z);
-                    break;
-                default:
-                    return false; // Eje de rotación no válido
-            }
-
-            Vector3 gridPosition = rotatedPosition + spatialpos; //taka
-            simulatedPositions.Add(gridPosition);
-
-            // Verifica si la posición simulada está fuera de los límites de la grilla
-            if (gridPosition.x < 0 || gridPosition.x >= width || gridPosition.y < 0 || gridPosition.z < 0 || gridPosition.z >= depth)
-            {
-                return false; // La rotación resultaría en una posición fuera de la grilla
-            }
+            pause = true;
+            Time.timeScale = 0;
+            gameOverText.gameObject.SetActive(true);
+            retry.gameObject.SetActive(true);
+            musicSource.Pause();
         }
-
-        // Verifica si alguna posición simulada colisionaría con un tetracubo estático
-        foreach (Vector3 pos in simulatedPositions) //taka
-        {
-            if (grid[(int)pos.x, (int)pos.y, (int)pos.z] == 2)
-            {
-                return false; // La rotación resultaría en una colisión
-            }
-        }
-
-        return true; // La rotación es viable
     }
 
-    private void movement()
+    private void movement() // Revisa si la ficha activa se puede mover (traslación o rotación) sin que se sobrelape con algún cubo estático o se salga de los límites y luego realiza el movimiento, luego actualiza su posición
     {
         cubeConfirm();
-        if (Input.GetKeyDown(KeyCode.Space))
+        if (Input.GetKeyDown(KeyCode.Space)) // Mueve la ficha hasta abajo donde está su ghostTetro
         {
             actualTetro.transform.position = ghostTetro.transform.position;
             updateGrid(1, 0);
@@ -467,7 +360,7 @@ public class GameBehaviourScript : MonoBehaviour
         }
 
         // Rotaciones
-        else if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+        else if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) // Reversas
         {
             if (Input.GetKeyDown(KeyCode.A) && canRotate("X-"))
             {
@@ -494,7 +387,7 @@ public class GameBehaviourScript : MonoBehaviour
                 inGrid();
             }
         }
-        else if (Input.GetKeyDown(KeyCode.A) && canRotate("X+"))
+        else if (Input.GetKeyDown(KeyCode.A) && canRotate("X+")) // Normales
         {
             foreach (Transform child in actualTetro.transform)
             {
@@ -518,5 +411,85 @@ public class GameBehaviourScript : MonoBehaviour
             }
             inGrid();
         }
+    }
+
+    public void cubeConfirm() // Confirma que los cubos estén dentro del espacio de juego
+    {
+        if (tetroIndex == 6 && a == true)
+        {
+            foreach (Transform child in actualTetro.transform)
+            {
+                child.localPosition = new Vector3((int)child.localPosition.x, (int)-child.localPosition.z, (int)child.localPosition.y);
+            }
+            inGrid();
+            a = false;
+        }
+        else if (tetroIndex != 6)
+            a = true;
+    }
+
+    private void inGrid() // Limpia las posiciones pasadas de los cubos del tetracubo activo en grid, luego pone las posiciones actuales de los cubos y finalmente mueve ghostTetro a dónde debería caer ahora
+    {
+        updateGrid(1, 0);
+        cubePositions(1);
+        updateGhost();
+    }
+
+    private bool canRotate(string rotationAxis) // Simula la rotación que se quiera hacer para el tetracubo actual y verifica que ningún cubo vaya a estar donde ya se encuentra otro estático
+    {
+        List<Vector3> simulatedPositions = new List<Vector3>();
+        Vector3 spatialpos = actualTetro.transform.position;
+        foreach (Transform child in actualTetro.transform)
+        {
+            Vector3 rotatedPosition;
+            switch (rotationAxis)
+            {
+                case "X+":
+                    rotatedPosition = new Vector3(child.localPosition.x, -child.localPosition.z, child.localPosition.y);
+                    break;
+                case "X-":
+                    rotatedPosition = new Vector3(child.localPosition.x, child.localPosition.z, -child.localPosition.y);
+                    break;
+                case "Y+":
+                    rotatedPosition = new Vector3(-child.localPosition.z, child.localPosition.y, child.localPosition.x);
+                    break;
+                case "Y-":
+                    rotatedPosition = new Vector3(child.localPosition.z, child.localPosition.y, -child.localPosition.x);
+                    break;
+                case "Z+":
+                    rotatedPosition = new Vector3(child.localPosition.y, -child.localPosition.x, child.localPosition.z);
+                    break;
+                case "Z-":
+                    rotatedPosition = new Vector3(-child.localPosition.y, child.localPosition.x, child.localPosition.z);
+                    break;
+                default:
+                    return false;
+            }
+
+            Vector3 gridPosition = rotatedPosition + spatialpos;
+            simulatedPositions.Add(gridPosition);
+
+            // Verifica si la posición simulada está fuera de los límites de la grilla
+            if (gridPosition.x < 0 || gridPosition.x >= width || gridPosition.y < 0 || gridPosition.z < 0 || gridPosition.z >= depth)
+            {
+                return false;
+            }
+        }
+
+        // Verifica si alguna posición simulada colisionaría con un tetracubo estático
+        foreach (Vector3 pos in simulatedPositions) //taka
+        {
+            if (grid[(int)pos.x, (int)pos.y, (int)pos.z] == 2)
+            {
+                return false;
+            }
+        }
+
+        return true; // La rotación es viable
+    }
+
+    public void retryClick() // Si se hace click en el botón de ISERT COIN, se vuelve a cargar la escena (para reiniciar el juego)
+    {
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
     }
 }
